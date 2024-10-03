@@ -7,7 +7,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Set work directory
 WORKDIR /
 
-ADD requirements.txt /
 # Install general-purpose dependencies
 RUN apt-get update -y && \
     apt-get install -y curl \
@@ -22,9 +21,10 @@ RUN apt-get update -y && \
 RUN pip install --upgrade pip
 RUN pip install wrapt --upgrade --ignore-installed
 RUN pip install gdown
-RUN pip install -r /requirements.txt
 
-COPY 
+
+COPY requirements.txt .
+RUN pip3 install --no-cache-dir -r requirements.txt
 
 
 # Back to default frontend
