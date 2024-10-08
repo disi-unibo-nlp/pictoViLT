@@ -7,16 +7,22 @@ from sklearn.metrics import f1_score
 import psutil
 
 
-
+from src.utils.eval_metrics import f1_score, recall, precision, jaccard_index
 
 class MyModel:
     def __init__(self, 
+                 pictogram_dataset,
                  model_name="dandelin/vilt-b32-mlm", 
                  model_path="dandelin/vilt-b32-mlm"):
+        """
+        :param pictogram_dataset: dataset containing pids of pictograms and their relative metadata
+        """
                  
         # Initialize the model, processor, and tokenizer
         self.processor = ViltProcessor.from_pretrained("dandelin/vilt-b32-mlm")
         self.tokenizer = processor.tokenizer
+
+        self.pictogram_dataset = pictogram_dataset
 
         # Load the pre-trained model if the model_path exists; otherwise, load the specified model_name
         if os.path.exists(model_path):
@@ -60,15 +66,11 @@ class MyModel:
 
                 loss.backward()
 
-                # Backpropagate the loss and update model parameters
                 if not batch_idx % gradient_accumulation_steps:
                     optimizer.step()
                     optimizer.zero_grad()
                     lr_scheduler.step()
 
-                # Logging memory usage and batch loss
-                #memory_usage = psutil.Process().memory_info().rss / (1024 * 1024)  # Memory usage in MB
-                #wandb.log({"Memory Usage (MB)": memory_usage, "train_loss": loss.item()})
                 print("train_loss on batch:", loss.item())
 
         # Calculate the mean training loss over all batches
@@ -86,6 +88,20 @@ class MyModel:
         true_labels = []
         correct_predictions = 0
         criterion = nn.CrossEntropyLoss()
+
+        key_sets = ["tags", "categories", "keywords"]
+        stats = ["jaccard", "precision", "recall", "F1"]
+        name_to_func = {
+            "jaccard" : jaccard_index,
+            "precision" : precision,
+            "recall" : recall,
+            "F1" : f1_score
+        }
+
+        evaluation_metrics_whole = {}
+        for key_set in key_sets:
+            for stat in stats:
+                evaluation_metrics_whole[f"{tags}_{stat}"] = 0
 
         for batch in tqdm(val_dataloader):
             batch = {k:v for k,v in batch.items()}
@@ -110,9 +126,36 @@ class MyModel:
             correct_predictions += (predicted_labels == labels).sum().item()
             true_labels.extend(labels.tolist())
             predictions.extend(predicted_labels.tolist())
-            memory_usage = psutil.virtual_memory().used / (1024 ** 2)  # Memory usage in megabytes
-            wandb.log({"memory_usage": memory_usage})
 
+            # Calculate Category Overlap (Jaccard, recall, precision, F1)
+            # - say the id is the relative position of the pictogram in the original dataset
+            eval_metrics = {}
+            for key_set in key_sets:
+                for stat in stats:
+                    eval_metrics[f"{tags}_{stat}"] = 0
+
+            for pred_id, pred in enumerate(predicted_labels):
+
+                pred_metadata = self.pictogram_dataset[pred]
+                label_metadata = self.pictogram_dataset[labels.tolist()[pred_id]]
+                
+                for key_set in key_sets:
+                    for stat in stats:
+                        eval_data = {
+                            "predicted" : set(pred_metadata[key_stat]),
+                            "real" : set(label_metadata[key_stat])
+                        }
+                        val = name_to_func(name_to_func[stat](**eval_data))
+                        eval_metrics[f"{tags}_{stat}"] += val
+            
+            for k in eval_metrics:
+                eval_metrics[k] /= len(predicted_labels)
+                evaluation_metrics_whole[k] += eval_metrics[k]
+
+        for k in eval_metrics:
+            evaluation_metrics_whole[k] /= len(val_dataloader) 
+        wandb.log(evaluation_metrics_whole)
+                
         print("correct_predictions total", correct_predictions)
         accuracy = correct_predictions / len(val_dataloader.dataset)
         accuracy = round(accuracy, 10)
